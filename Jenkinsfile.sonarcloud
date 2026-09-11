@@ -1,0 +1,90 @@
+// SIT223/753 - Task 7.1C - Part 2 Task 1: DevSecOps with SonarCloud.io
+// Extends the Part 1 Task 2 pipeline with a 'SonarCloud Analysis' stage.
+// Security testing of the intentionally vulnerable nodejs-goof project using npm.
+// Aaryan Dandona (s224842524)
+//
+// Windows Jenkins: 'bat' is used instead of 'sh', and '|| exit /b 0' instead of '|| true'
+// so that the pipeline continues past expected test/tooling failures.
+
+pipeline {
+  agent any
+
+  // Poll GitHub every minute so a new commit triggers the pipeline automatically
+  triggers {
+    pollSCM('* * * * *')
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        // Equivalent to: git branch: 'main', url: '...'
+        checkout([$class: 'GitSCM',
+                  branches: [[name: '*/main']],
+                  userRemoteConfigs: [[url: 'https://github.com/automacioai-code/8.2CDevSecOps.git']]])
+      }
+    }
+
+    stage('Install Dependencies') {
+      steps {
+        echo 'Installing project dependencies with npm.'
+        bat 'call npm install --legacy-peer-deps --no-audit --no-fund || exit /b 0'
+      }
+    }
+
+    stage('Run Tests') {
+      steps {
+        echo 'Running the project test suite. Failures are tolerated so the security scan still runs.'
+        bat 'call npm test || exit /b 0'
+      }
+    }
+
+    stage('Generate Coverage Report') {
+      steps {
+        echo 'Generating a coverage report for later static analysis.'
+        bat 'call npm run coverage || exit /b 0'
+      }
+    }
+
+    stage('NPM Audit (Security Scan)') {
+      steps {
+        echo 'Running npm audit - this lists the known CVEs present in the dependency tree.'
+        bat 'call npm audit || exit /b 0'
+      }
+    }
+
+    stage('SonarCloud Analysis') {
+      environment {
+        // Secret-text credential added in Manage Jenkins > Credentials with ID 'SONAR_TOKEN'.
+        // The SonarScanner CLI reads the SONAR_TOKEN environment variable automatically,
+        // so the token never appears in the console output.
+        SONAR_TOKEN = credentials('SONAR_TOKEN')
+      }
+      steps {
+        echo 'Running SonarCloud static analysis and security scan.'
+        bat '''
+@echo off
+setlocal
+set SCANNER_VER=8.1.0.6389
+set SCANNER_HOME=%WORKSPACE%\\.sonar-scanner\\sonar-scanner-%SCANNER_VER%-windows-x64
+
+if not exist "%SCANNER_HOME%\\bin\\sonar-scanner.bat" (
+  echo Downloading SonarScanner CLI %SCANNER_VER% ...
+  if not exist "%WORKSPACE%\\.sonar-scanner" mkdir "%WORKSPACE%\\.sonar-scanner"
+  curl -sSLo "%WORKSPACE%\\.sonar-scanner\\scanner.zip" https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-%SCANNER_VER%-windows-x64.zip
+  tar -xf "%WORKSPACE%\\.sonar-scanner\\scanner.zip" -C "%WORKSPACE%\\.sonar-scanner"
+)
+
+echo Invoking the SonarScanner executable...
+call "%SCANNER_HOME%\\bin\\sonar-scanner.bat"
+'''
+      }
+    }
+  }
+
+  post {
+    always {
+      echo 'Pipeline finished - npm audit output above, SonarCloud results at https://sonarcloud.io/project/overview?id=automacioai-code_8.2CDevSecOps'
+    }
+  }
+}
